@@ -1,0 +1,49 @@
+4.Spark的Task最佳计算位置算法
+
+1.Task任务本算法运用场景
+        Task的运行调度处理，来引入Task任务本地性算法。
+        在得到逻辑上Result Stage，Spark为了进行计算就必须先报任务以一定的集群可识别形式提交给集群进行计算。
+    Spark的任务提交过程如下：
+    (1)生成ActiveJob，为提交finalStage做准备。
+    (2)提交finalStage
+        提交Stage，如果有未提交的ParentStage，则会递归提交这些ParentStage，
+        只有所有ParentStage都计算完了，才能提交当前Stag
+    (3)提交MissingTask
+        missingTask会最先会再到需要计算的分片，然后对Stage的运行环境进行设定，然后取得Task计算的本地性级别，
+        最后会根据这些信息建立Tasks来处理每个分片，在提交给底层TaskScheduler之前，Spark还会将Tasks封装成TaskSet。
+        最后提交TaskSet给TaskScheduler，等待TaskScheduler最终向集群提交这些Task，并且DAGScheduler会
+        监听这些Task的状态。
+
+2.数据本地性
+  (1)这里我们来着重讲解获取数据本地性部分的代码：
+    val taskIDToLocations:Map[Int,Seq[TaskLocations]] = try {
+        stage match {
+         case s:ShuffleMapStage =>
+            partitionsToCompute.map { id, getPreferredLocs(stage.rdd,id))}.toMap
+         case s:ResultStage =>
+            val job = s.activeJob.get
+            partitionsToCompute.map { id =>
+                val p = s.partitions(id)
+                (id, getPreferredLocs(stage.rdd, p))
+            }.tpMap
+        }
+    }catch {
+        case NonFatal(e) =>
+            stage.makeNewStageAttempt(partitionsToCompute.size)
+            listenerBus.post(SparkListenerStageSubmitted(stage.lastestInfo,properties))
+            abortStage(stage, s"Task creation fialed: $e\n${e.getStackTraceString}",Some(e))
+            runningStage -= stage
+            return
+    }
+  这里会将要计算的分片（Partition）转换为(id, getPreferredLocs(stage.rdd, id)) 类型的tuple，
+  进而由truple转换未一个Map映射，在Task构造时需要一个locs参数，便可以利用这个映射由id得到相应Partition的本地性级别。
+  在每个分片（Partition）内部则是通过getPreferredLocs()方法得到的
+
+    在具体算法实现的时候，首先查询DAGScheduler的内存数据结构中是否存在当前partition的数据本地性信息，
+    若有的话就直接放回该信息；若没有首先会调用rdd.getPreferredLocations来得到数据的本地性。
+      例如想让Spark运行在Hbase上或者是一种现在Spark还没有直接支持的数据库上，此时开发者需要自定义RDD，
+      为了保证Task计算的数据本地性，最为关键的方式就是必须实现RDD的getPreferredLocations方法，来支持各种来源的数据。
+     DAGScheduler计算数据本地性时，巧妙的借助了RDD自身的getPreferredLocations中的数据，最大化的优化效率，
+     因为getPreferredLocations中表明了每个Partition的数据本地性。虽然当然Partition可能被persist或checkpoint，
+     但是persist或checkpoint默认情况下肯定和getPreferredLocations中的partition的数据本地性是一致的。
+     所以，这种算法就极大的简化了Task数据本地性算法的实现，并且优化了效率

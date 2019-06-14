@@ -1,0 +1,57 @@
+1.创建一张表，存放每天的课程统计的TopN的信息：
+create table day_video_access_topn_stat(
+day varchar(8) not null,
+cms_id bigint(10) not null,
+times bigint(10) not null,
+primary key (day, cms_id)
+);
+
+2.查看表结构：
+desc day_video_access_topn_stat;
+
+3.删除表数据：
+truncate day_video_access_topn_stat;
+
+4.创建一张表，存放每天的文章统计的TopN的信息：
+create table day_article_access_topn_stat(
+day varchar(8) not null,
+cms_id bigint(10) not null,
+times bigint(10) not null,
+primary key (day, cms_id)
+);
+
+5.查看表结构：
+desc day_article_access_topn_stat;
+
+6.删除表数据：
+truncate day_article_access_topn_stat;
+
+7.创建一张表，存放按地市统计的课程统计的TopN的信息：
+create table day_video_city_access_topn_stat(
+day varchar(8) not null,
+cms_id bigint(10) not null,
+city varchar(20) not null,
+times bigint(10) not null,
+times_rank int not null,
+primary key (day, cms_id, city)
+);
+
+8.查看表结构：
+desc day_video_city_access_topn_stat;
+
+9.删除表数据：
+truncate day_video_city_access_topn_stat;
+
+10.创建一张表，存放按地市统计的课程统计的TopN的信息：
+create table day_video_traffics_topn_stat(
+day varchar(8) not null,
+cms_id bigint(10) not null,
+traffics bigint(10) not null,
+primary key (day, cms_id)
+);
+
+10.查看表结构：
+desc day_video_traffics_topn_stat;
+
+11.删除表数据：
+truncate day_video_traffics_topn_stat;

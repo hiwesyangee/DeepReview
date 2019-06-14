@@ -1,0 +1,38 @@
+1.Spark特点：
+Apache Spark is a fast and general-purpose cluster computing system.
+It provides high-level APIs in Java, Scala, Python and R, and an optimized engine that
+supports general execution graphs.
+It also supports a rich set of higher-level tools including Spark SQL for SQL
+and structured data processing,
+MLlib for machine learning,
+GraphX for graph processing,
+and Spark Streaming.
+
+Apache Spark是一种快速通用的集群计算系统。
+它提供了Java、Scala、Python和R的高级api，以及支持一般执行图的优化引擎。
+它还支持一组丰富的高级工具，包括用于SQL及结构化数据处理的Spark SQL、机器学习的MLlib、
+图形处理的GraphX和流式计算SparkStreaming。
+
+1）快速（更高的性能）。
+    相比较于Map/Reduce,Map端输出的结果需要'落地到磁盘'，中间经过Shuffle过程，Reduce端再从磁盘读取，最后又存到磁盘。
+    不断的进行计算，就不断的往磁盘中进行读写，速度就慢了。
+    Spark的大量计算都能基于内存，大多数函数在内存中进行迭代，只有小部分需要落地到磁盘，速度就快了。
+2）易用性（多种开发语言）。
+    支持Java、Scala、Python、R语言。
+    对于大型项目，使用Java语言进行多系统整合更好；
+    本身就是Scala开发的，开发更简洁，运行效率也更高；
+    内部超过80个算子，支持更灵活的开发。
+3）通用性（一站式解决方案）。
+    Spark取代MapReduce；
+    SparkSQL取代大部分Hive工作，处理结构化数据；
+    SparkStreaming也可以进行流式计算；
+    SparkMLlib取代Mahout进行机器学习数据挖掘；
+    SparkGraphX进行图像处理；
+4）多平台运行（Yarn、Mesos、Standalone、cloud(云端)都可运行）。
+    国内：Yarn。基于Hadoop。
+    国外：Mesos。同一团队。
+    Standalone不需要Mesos也不需要yarn，spark自己管理资源， 有Master和Worker，相当于ResourceManager和Nodemanager
+
+在Spark程序中，一个应用程序包含多个Job任务，适合进行'数据挖掘'，'机器学习'等多轮迭代式计算任务。
+在Hadoop程序中，一个Job任务就是一个应用,可以处理超大规模的数据，适合日志分析挖掘等较少的迭代的长任务需求，
+        结合了数据的分布式的计算。

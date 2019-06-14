@@ -1,0 +1,15 @@
+##Spark Core内容规划
+1.Spark Core离线计算RDD底层机制与原理，及对应源码
+2.Spark Core离线计算RDD性能优化与配置调优
+
+##Spark Core详细规划：
+1.1 Spark特点
+1.2 Spark常用算子
+1.3 Spark底层机制
+1.4 Spark的Task最佳计算位置算法
+1.5 Spark Core相关源码
+
+2.1 Spark调优之开发调优篇
+2.2 Spark调优之资源调优篇
+2.3 Spark调优之数据倾斜调优篇
+2.4 Spark调优之Shuffle调优篇

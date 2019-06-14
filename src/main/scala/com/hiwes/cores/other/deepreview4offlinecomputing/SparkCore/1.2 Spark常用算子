@@ -1,0 +1,236 @@
+2.Spark常用算子
+
+RDD概念：弹性分布式数据集（Resilient（弹性且可复原） Distributed（分布式） Datasets（数据集））
+
+Spark Core初始化RDD的三种方式：
+    1）parallelize并行化读取自创建数组————————主要用于本地测试
+        在传入List的同时，可以直接对集合进行分区，后面的参数表示分区数量
+    2）textFile读取本地文件————————主要用于本地临时性处理存储大量数据的文件
+    3）textFile读取HDFS文件————————最常用的生产环境文件，针对HDFS存储的大数据，进行离线批处理操作
+
+SparkContext的textFile()除了可以针对上述几种普通的文件创建RDD之外，还有一些特例的方法来创建RDD：
+A、SparkContext的 wholeTextFiles() 方法，可以针对一个目录中的大量小文件，
+    返回由（fileName,fileContent）组成的pair，即pairRDD，而不是普通的RDD。
+    该方法返回的是文件名字和文件中的具体内容；而普通的textFile()方法返回的RDD中，每个元素就是文本中一行文本。
+B、SparkContext的 sequenceFileK,V 方法，可以针对SequenceFile创建RDD，K和V泛型类型就是SequenceFile的key和value的类型。
+    K和V要求必须是Hadoop的序列化机制，比如IntWritable、Text等。
+C、SparkContext的 hadoopRDD()方 法，对于Hadoop的自定义输入类型，可以创建RDD。
+    该方法接收JobConf、InputFormatClass、Key和Value的Class。
+D、SparkContext的objectFile()方法，可以针对之前调用的RDD的saveAsObjectFile()创建的对象序列化的文件，
+    反序列化文件中的数据，并创建一个RDD。
+
+
+
+Transformations(转换算子):
+    1.map:  ## 适用于PairRDD ##
+        用于遍历RDD,通过对每个元素施加一个函数func,并返回一个新的RDD。
+    2.filter:  ## 适用于PairRDD ##
+        用于遍历RDD,通过对每个元素进行一个判定func,并返回一个新的RDD。
+    3.flatMap:  ## 适用于PairRDD ##
+        用于遍历RDD,通过对每个元素施加一个函数func，返回的是多个元素组成的迭代器。
+        map函数会对每一条输入进行指定的操作,然后为每一条输入返回一个对象;而flatMap函数则是两个操作的集合——正是“先映射后扁平化”:
+        操作1:同map函数一样：对每一条输入进行指定的操作,然后为每一条输入返回一个对象
+        操作2:最后将所有对象合并为一个对象
+        Java版本的最终返回的是：Arrays.asList(s.split(",")).iterator()) 一个迭代器。
+    4.mapPartitions:  ## 适用于PairRDD ##
+        用于对每个RDD的分区施加一个函数func,并返回一个新的RDD。
+        如果在map过程中需要频繁创建额外的对象,则mapPartitions效率比map高的多。
+        (例如将rdd中的数据通过jdbc写入数据库,map需要为每个元素创建一个链接而mapPartition为每个partition创建一个链接)
+        需要.mapPartitions(ite => ite.map(func))  // 对每个分区元素施加函数func
+    5.mapPartitionsWithIndex:     ## 适用于PairRDD ##
+        作用和mapPartitions相同，但是需要加入分区索引。
+        这里的index是分区号，需要传递的参数就是分区号和元素本身这么一堆tup。
+        data4.mapPartitionsWithIndex((i1, iter) => {
+              var res = List[(Int, Int)]()
+              while (iter.hasNext) {
+                val next = iter.next()
+                res = res.::(i1, next)
+              }
+              res.iterator)
+        通过对这个RDD的每个分区应用一个函数，同时跟踪原始分区的索引，返回一个新的RDD。
+        data1.mapPartitionsWithIndex((i1, ite) -> {
+                    ArrayList<Tuple2<Integer, Integer>> list = new ArrayList<>();
+                    while (ite.hasNext()) {
+                        int elemenet = ite.next();
+                        list.add(new Tuple2<>(i1, elemenet));
+                    }
+                    return list.iterator();
+    6.sample:  ## 适用于PairRDD ##
+        返回一个RDD的抽样子集。三个参数————(withReplaceMent,fraction,seed)
+                // withReplaceMent:元素是否能多次采样
+                // fraction:分数。样本的期望大小是RDD大小的一部分
+                //                *没有替换:每个元素被选中的概率;分数必须为[0,1]
+                //                *替换:选择每个元素的预期次数;分数必须大
+                //                *大于等于0
+                // seed:用于随机数生成器的种子,不好把控，一般设置为默认值
+                当withReplaceMent=false，fraction=每个元素被选中的频率；
+                                 =true，fraction=每个元素被选中的期望次数(不是最高次数,而是期望);
+
+        takeSample:  ## 适用于PairRDD ##
+            返回一个Array[T].三个参数————(withReplaceMent,num,seed)
+                该方法仅在预期结果数组很小的情况下使用，因为所有数据都被加载到driver的内存中。
+                                // withReplaceMent:元素是否能多次采样
+                                // num：返回的样本的大小
+                                    withReplacement=false;样本个数num大于父本个数时,只能返回父本个数
+                                    withReplacement=false;样本个数num小于父本个数时,返回样本个数
+                                    withReplacement=true;样本个数num大于父本个数时,返回样本个数
+                                    withReplacement=true;样本个数num小于父本个数时,返回样本个数
+                                // seed:用于随机数生成器的种子,不好把控，一般设置为默认值
+    7.union:  ## 适用于PairRDD ##
+        需要保证两个RDD的类型相同，合并后元素不去重，保存了所有元素，通过更简单的API: ++相当于union函数操作,并且内部元素无序。
+        实验证明：对两个List的数据设定分区后传入RDD进行合并，最终的结果显示数据分区会增多，数量等于两个RDD的分区之和。不设定分区，结果也一样，
+                证明是直接将分区进行拼接的。
+        0,5                         0,12                        1,5 2,12
+        1,5                         0,11                        1,4 2.11
+        0,1         ++/union        1,15            =>          1,3 3,15
+        1,4                         1,14                        0,2 3,14
+        1,3                         1,13                        0,2 3,13
+    8.intersection:  ## 适用于PairRDD ##
+        返回两个RDD的交集，并对内容进程去重，触发Shuffle过程。    (看源码但是看不出是否直接调用的distinct()方法)
+        def intersection(other: RDD[T], numPartitions: Int): RDD[T]
+            参数numPartitions指定返回的RDD的分区数，可以对生成的RDD的分区数进行配置。
+        def intersection(other: RDD[T], partitioner: Partitioner)(implicit ord: Ordering[T] = null): RDD[T]
+            参数partitioner用于指定分区函数：使用了隐式转换
+    9.distinct:
+        对RDD进行去重，触发Shuffle过程。
+        ## 带分区数去重。
+        def distinct(numPartitions: Int)(implicit ord: Ordering[T] = null): RDD[T] = withScope {
+            map(x => (x, null)).reduceByKey((x, y) => x, numPartitions).map(_._1)
+        }
+        ## 不带分区数去重。
+        def distinct(): RDD[T] = withScope {
+            distinct(partitions.length)
+        }
+    10.groupByKey:
+        用于对每个key进行操作，但只生成一个序列sequence。
+        需要将所有的数据进行转移，产生大量的传输，
+    11.reduceByKey:
+        用于对每个key对应的多个value进行merge操作，
+        最重要的是它能够在本地先进行merge操作，并且merge操作可以通过函数自定义。
+
+        二者异同:
+            * 当采用groupByKey时，由于它不接收函数，
+            * spark只能先将所有的键值对(key-value pair)都移动，触发Shuffle。
+            *       这样的后果是集群节点之间的开销很大，导致传输延时。
+            *
+            * 当采用reduceByKey时，Spark可以在每个分区移动数据之前将待输出数据与一个共用的key结合。
+            *       然后lamdba函数在每个区上被再次调用来将所有值reduce成一个最终结果。
+
+        在每个映射器上执行本地合并，然后将结果发送给一个reducer。
+        类似于MapReduce中的“combiner”；输出将使用现有的分区/并行级别进行哈希分区。
+
+            ###  相当于一个在本地合并了再到终点进行合并，另一个直接把所有数据全部传输到终点进行合并，所以性能差  ###
+    12.aggregateByKey/aggregate:
+        根据Key进行聚合。
+        理解aggregate算子:
+            先看函数签名:
+                def aggregate[U: ClassTag](zeroValue: U)(seqOp: (U, T) => U, combOp: (U, U) => U): U
+            可以看出，这个函数是个柯里化的方法，输入参数分为了两部分：
+            (zeroValue: U) 与 (seqOp: (U, T) => U, combOp: (U, U) => U)
+        看函数之前的注释，解释过来就是:
+            aggregate先对每个分区的元素做聚集，然后对所有分区的结果做聚集，聚集过程中，使用的是给定的聚集函数
+            以及初始值”zero value”。这个函数能返回一个与原始RDD不同的类型U，
+            因此，需要【一个合并RDD类型T到结果类型U的函数】，【还需要一个合并类型U的函数】。
+            这两个函数都可以修改和返回他们的第一个参数，而不是重新新建一个U类型的参数以避免重新分配内存。
+
+            参数zeroValue：seqOp运算符的每个分区的累积结果的初始值以及combOp运算符的不同分区的组合结果的初始值 - 这通常将是初始元素（例如“Nil”表的列表 连接或“0”表示求和）
+            参数seqOp： 每个分区累积结果的聚集函数。
+            参数combOp： 一个关联运算符用于组合不同分区的结果
+            看例子:
+            1)val list = List(1,2,3,4,5,6,7,8,9)
+              val (mul, sum, count) = sc.parallelize(list, 2).aggregate((1, 0, 0))(
+                  (acc, number) => (acc._1 * number, acc._2 + number, acc._3 + 1),
+                  (x, y) => (x._1 * y._1, x._2 + y._2, x._3 + y._3)
+                      )
+                  (sum / count, mul)
+                  sum求和，count是累积元素个数，mul是所有元素乘积。
+            解释一下具体过程：
+            1.初始值是(1, 0 ,0)
+            2.number是函数中的T，也就是List中的元素，此时类型为Int。
+              而acc的类型为(Int, Int, Int)。acc._1 * num是各元素相乘(初始值为1)，acc._2 + number为各元素相加。
+            3.sum / count为计算平均数。
+
+            为了加深理解，看另一个例子：
+            2）val raw = List("a", "b", "d", "f", "g", "h", "o", "q", "x", "y")
+                      val (biggerthanf, lessthanf) = sc.parallelize(raw, 1).aggregate((0, 0))(
+                          (cc, str) => {
+                              var biggerf = cc._1
+                              var lessf = cc._2
+                              if (str.compareTo("f") >= 0) biggerf = cc._1 + 1
+                              else if(str.compareTo("f") < 0) lessf = cc._2 + 1
+                              (biggerf, lessf)
+                          },
+                          (x, y) => (x._1 + y._1, x._2 + y._2)
+                      )
+            统计一下在raw这个list中，比”f”大与比”f”小的元素分别有多少个。
+            代码本身的逻辑也比较简单，就不再更多解释。
+    13.sortBy/sortByKey:
+        对数据进行排序。
+        sortBy底层调用sortByKey算子，主要参数有两个：
+        一个是ascending: Boolean = true，默认为true，指定升/降序排列；
+        一个是numPartitions: Int = self.partitions.length，默认是父rdd的分区数,指定分区数。
+        一般来说，需要提前将K备好，然后直接调用sortByKey()算子,按K的顺序进行排列。
+        汉字的k的排序是按照每个字的首字母排列；
+        字母的k的排序是按照字母排序；
+
+    14.join:
+        join 对两个需要连接的 RDD 进行 cogroup函数操作，将相同 key 的数据能够放到一个分区，
+        在 cogroup 操作之后形成的新 RDD 对每个key 下的元素进行笛卡尔积的操作，返回的结果再展平，
+        对应 key 下的所有元组形成一个集合。最后返回 RDD[(K， (V， W))]。
+        本质是通过cogroup()算子先进行协同划分,再通过flatMapValues将合并的数据打散。
+    15.cogroup:
+        cogroup相当于SQL中的全外关联full outer join，返回左右RDD中的记录，关联不上的为空。
+        参数numPartitions用于指定结果的分区数。
+        参数partitioner用于指定分区函数。
+    16.cartesian:
+        求两个RDD的笛卡尔积
+    17.pipe:
+        在Linux系统中，有许多对数据进行处理的shell命令，我们可能通过pipe变换将一些shell命令用于Spark中生成新的RDD。。
+        scala> val rdd = sc.parallelize(0 to 7, 4)
+        rdd: org.apache.spark.rdd.RDD[Int] = ParallelCollectionRDD[11] at parallelize at <console>:24
+
+        scala> rdd.glom.collect
+        res20: Array[Array[Int]] = Array(Array(0, 1), Array(2, 3), Array(4, 5), Array(6, 7))
+
+        scala> rdd.pipe("head -n 1").collect #提取每一个分区中的第一个元素构成新的RDD
+        res21: Array[String] = Array(0, 2, 4, 6)
+    18.coalesce:
+        对RDD进行重分区;
+        def coalesce(numPartitions:Int，shuffle:Boolean=false):RDD[T]
+        该函数用于将RDD进行重分区，使用HashPartitioner。
+        第一个参数为重分区的数目，第二个为是否进行shuffle，默认为false。
+    19.repartition:
+        对RDD进行重分区;
+        def repartition(numPartitions: Int): RDD[T]
+        该函数其实就是coalesce函数第二个参数为true的实现。
+
+        二者区别：
+        他们两个都是RDD的分区进行重新划分，repartition只是coalesce接口中shuffle为true的简易实现，
+        （假设RDD有N个分区，需要重新划分成M个分区）
+        1）N < M。一般情况下N个分区有数据分布不均匀的状况，利用HashPartitioner函数将数据重新分区为M个，
+                这时需要将shuffle设置为true。
+        2）如果N > M并且N和M相差不多，(假如N是1000，M是100)那么就可以将N个分区中的若干个分区合并成一个新的分区，
+                最终合并为M个分区，这时可以将shuff设置为false，在shuffl为false的情况下，
+                如果M>N时，coalesce为无效的，不进行shuffle过程，父RDD和子RDD之间是窄依赖关系。
+        3）如果N > M并且两者相差悬殊，这时如果将shuffle设置为false，父子RDD是窄依赖关系，
+                他们同处在一个stage中，就可能造成Spark程序的并行度不够，从而影响性能，如果在M为1的时候，
+                为了使coalesce之前的操作有更好的并行度，可以讲shuffle设置为true。
+    20.repartitionAndSortWithinPartitions:
+        如果需要在repartition重分区之后，还要进行排序，建议直接使用repartitionAndSortWithinPartitions算子。
+        因为该算子可以一边进行重分区的shuffle操作，一边进行排序。
+        shuffle与sort两个操作同时进行，比先shuffle再sort来说，性能可能是要高的。
+
+Action(行为算子):
+    1.reduce:对RDD数据进行reduce操作。
+    2.collect:收集所有的RDD数据，返回一个数组。
+    3.count:对RDD的元素计数。
+    4.first:获取最开始的元素，可以设定数量。
+      top:获取最高的元素，可以这顶数量。
+    5.take(n):获取某n个元素。
+    6.takeSample:同上
+    7.takeOrdered:和top类似，只不过以和top相反的顺序返回元素。
+    8.saveAsTextFile:存储数据到文件，可以存储到HDFS或本地。
+    9.saveAsSequenceFile:存储数据到序列文件，可以存储到HDFS或本地。
+    10.saveAsObjectFile:存储数据到任意文件。
+    11.countByKey:按Key进行计数。
+    12.foreach:对RDD进行遍历，并针对每个元素施加func，没有返回。

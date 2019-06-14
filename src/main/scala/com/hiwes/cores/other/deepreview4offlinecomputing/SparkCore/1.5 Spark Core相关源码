@@ -1,0 +1,536 @@
+5.Spark Core相关源码
+
+1) 对于standalone模式下的Master、Worker和划分stage的理解是很有帮助的。
+
+1.1 master和worker都要创建ActorSystem来创建自身的Actor对象，master内部维护了
+        一个保存workerinfo的hashSet
+        和一个key为workerid,value为workerInfo的HashMap。
+
+1.2 master构造方法执行后会启动一个定时器，定期检查超时的worker。
+
+1.3 worker构造方法执行后会尝试与master建立连接并发送注册消息，master收到消息后，封装worker并持久化，再给worker反馈，
+        worker收到反馈后，启动定时任务向master发送心跳，master收到心跳后更新心跳时间。
+
+1.4 new SparkContext(),执行主构造器，创建SparkEnv，env里创建了ActorSystem用于通信，
+        然后创建TaskScheduler，创建DAGScheduler。
+        TaskScheduler里创建了2个actor分别负责与master和executors进行通信。
+
+1.5 ClientActor创建之前，会准备一大堆的参数，包括spark参数，java参数，executor的实现类等，
+        封装进AppClient，然后创建ClientActor与Master建立连接发送注册信息，Master收到后保存app的信息并反馈。
+
+1.6 这时Master开始调度资源并启动worker，有两种调度方式：尽量打散，尽量集中， 默认的是：打散。
+        Master发消息给Worker，worker拼接Java命令，启动子进程。
+        (TaskScheduler 里会创建一个backend,backend调用start方法后，会先调用父类的start方法，
+        父类的start方法会创建DriverActor,再执行自己的start方法创建ClientActor)
+
+1.7 执行到Action算子会执行sparkContext里的runJob(),再调用DAGScheduler的runJob()，
+    通过2个HashSet和1个Stack划分stage，然后提交stage。
+
+1.8 将stage创建成多个Task，分为shuffleMapTask和ResultTask，组成taskSet，
+    由taskScheduler通过DriverActor向Executor进行提交。
+
+DAG的逻辑：
+val parents = new HashSet[Stage]
+val visited = new HashSet[RDD[_]]
+val waitingForVisit = new Stack[RDD[_]]
+将最后一个rdd压栈waitingForVisit，当waitingForVisit非空时while循环，waitingForVisit弹栈出的rdd判断是否在visited中，
+否，则rdd添加进visited。循环rdd的父rdd，
+如果不是shuffleMapStage，将rdd压栈waitingForVisit，
+是shuffleMapStage，则再求父stage加入parents，求父stage是调用本方法的递归过程。
+
+=====================================================
+object Master
+　　|--def main()
+　　　　|--加载配置文件并解析。
+　　　　|--//创建ActorSystem和Actor
+　　　　|--def startSystemAndActor()
+　　　　　　|--//通过AkkaUtils工具类创建ActorSystem
+　　　　　　|--AkkaUtils.createActorSystem()
+　　　　　　　　|--//定义一个函数，创建ActorSystem
+　　　　　　　　|--val startService: Int => (返回值) = {doCreateActorSystem()}
+　　　　　　　　　　|--val (actorSystem, boundPort) = doCreateActorSystem()
+　　　　　　　　　　　　|--//创建ActorSystem
+　　　　　　　　　　　　|--//准备Akka参数
+　　　　　　　　　　　　|--val akkaConf = xxxx
+　　　　　　　　　　　　|--//创建ActorSystem
+　　　　　　　　　　　　|--val actorSystem = ActorSyatem(name, akkaConf)
+　　　　　　　　　　　　|--return (actorSystem, boundPort)
+　　　　　　　　|--//调用函数
+　　　　　　　　|--Utils.startServiceOnPort(startService())
+　　　　　　　　　　|--从一个没有被占用的端口启动服务，调用startService函数
+　　　　|--//通过ActorSystem创建Actor:master
+　　　　|--val actor(master) = actorSystem.actorOf(master)//创建master，master也是一个actor
+　　|--//成员变量：保存workerInfo
+　　|--val workers = new HashSet[WorkerInfo]
+　　|--//成员变量：保存(workerId,workInfo)
+　　|--val idToWorker = new HashMap[String, WorkerInfo]
+　　|--//构造方法之后，receive方法之前
+　　|--def preStart()
+　　　　|--//启动一个定时器，定时检测超时的worker
+　　　　|--context.system.scheduler.scheduler(self,checkxxx)//自己给自己发消息，发送到自己的recevice方法，启动任务
+　　|--接收worker向master注册的消息
+　　|--case RegisterWorker()
+　　　　|--//封装worker信息
+　　　　|--val worker = new WorkerInfo()
+　　　　|--//持久化到zk
+　　　　|--persistenceEngine.addWorker(worker)
+　　　　|--//向worker反馈信息
+　　　　|--sender ! RegisteredWorker(masterUrl)
+　　　　|--//任务调度
+　　　　|--schedule()
+　　|--case Heartbeat(workerId)//worker发来的心跳
+　　　　|--//更新上一次心跳时间
+　　　　|--workerInfo.lastHeartbeat = Syatem.currentTimeMillis()
+--------接SparkContext，Driver创建ClientActor向Master注册应用信息-----------
+　　|--case RegisterApplication(description)
+　　　　|--//封装消息
+　　　　|--val app = createApplication(description, sender)
+　　　　|--//注册消息，即存入集合
+　　　　|--registerApplication(app) //方法内部就是把app放进map等
+　　　　　　|--HashMap waitingApps(appid, app)
+　　　　|--//持久化保存
+　　　　|--persistenceEngine.addApplication(app)
+　　　　|--//Master向ClientActor发送注册成功的消息
+　　　　|--sender ! RegisterApplication(app.id, masterUrl)
+　　　　|--//Master开始调度资源，将任务启动到worker上
+　　　　|--//两种情况下会进行调度：
+　　　　|--//1、提交任务，杀死任务
+　　　　|--//2、worker新增或减少
+　　　　|--schedule()
+--------Master进行资源的调度-------------
+　　|--//两种调度方式：尽量打散，尽量集中
+　　|--def schedule()
+　　　　|--//尽量打散
+　　　　　　|--//进行一系列的判断过滤，例如worker上剩余的核数或内存是否大于app所需资源
+　　　　　　|--//分核数的逻辑：
+　　　　　　|--//假设需要10个核心，现有4台机器，各有8个核心
+　　　　　　|--//创建一个长度为4的数组，角标为0，角标=(角标+1)%4，那角标只会在0~3之间循环，
+　　　　　　|--//循环一次需要的核心-1，worker(角标)的核心+1
+　　　　　　|--//Master发信息让worker启动executor
+　　　　　　|--launchExecutor(usableWorkers(pos), exec)
+　　　　|--//尽量集中
+　　　　　　|--//一下子把worker剩余的资源全部分配完在分配下一个worker
+　　　　　　|--//Master发信息让worker启动executor
+　　　　　　|--launchExecutor(worker, exec)
+--------Master发信息让worker启动executor-------------
+　　|--def launchExecutor(worker, exec)
+　　　　|--//记录worker使用资源
+　　　　|--worker.addExecutor(exec)
+　　　　|--//master发消息给worker，将参数传递给worker，让他启动executor
+　　　　|--worker.actor ! LaunchExecutor(.....)
+　　　　|--//Master向ClientActor发消息，告诉他executor已经启动了
+　　　　|--exec.application.driver ! ExecutorAdded(......)
+-----------------------------------------------------
+object Worker
+　　|--def main()
+　　　　|--//创建ActorSystem和Actor
+　　　　|--def startSyatemAndActor()
+　　　　　　|--与Master过程相同
+　　　　|--//通过ActorSystem创建Actor:worker
+　　　　|--val actor(worker) = actorSystem.actorOf(worker)
+　　|--//构造方法之后，receive方法之前
+　　|--def preStart()
+　　　　|--//与master建立连接，发送注册消息
+　　　　|--registerWithMaster()
+　　　　　　|--//尝试注册，如果失败尝试多次
+　　　　　　|--tryRegidterAllMasters()
+　　　　　　　　|--//建立连接
+　　　　　　　　|--val actor(master) = context.actorSelection(masterAkkaUrl)
+　　　　　　　　|--//发送注册消息
+　　　　　　　　|--actor ! RegisterWorker(workId, host, port, cores, memory...)
+　　|--//Master发给Worker注册成功的消息
+　　|--case RegisteredWorker(masterUrl)
+　　　　|--//启动定时器，定期发送心跳
+　　　　|--context.system.scheduler.scheduler(self,SendHeartbeat)//自己给自己发消息，发送到自己的recevice方法，启动任务
+　　|--case SendHeartbeat
+　　　　|--//发送心跳
+　　　　|--master ！ Heartbeat(workid)
+-------------上接：Master发信息让worker启动executor-----------
+　　|--case LaunchExecutor(...)
+　　　　|--创建ExecutorRunner，将参数放入其中，然后再通过他启动Executor
+　　　　|--val manager = new ExecutorRunner(...)
+　　　　|--//调用ExecutorRunner的start方法来启动executor java子进程
+　　　　|--manager.start()
+class ExecutorRunner
+　　|--def start()
+　　　　|--//创建线程，通过线程的start来启动java子进程
+　　　　|--workerThread = new Thread(){def run(){fetchAndRunExecutor()}}
+　　　　|--workerThread.start()
+　　|--def fetchAndRunExecutor()
+　　　　|--//启动子进程
+　　　　|--//有具体的类，拼接java命令启动相应的类
+
+总结：Master和Worker之间的通信：
+master和worker都要创建ActorSystem来创建自身的Actor对象，master内部维护了一个保存workerinfo的hashSet
+和一个key为workerid,value为workerInfo的HashMap。
+master构造方法执行后会启动一个定时器，定期检查超时的worker。
+worker构造方法执行后会尝试与master建立连接并发送注册消息，master收到消息后，封装worker并持久化，再给worker反馈，
+worker收到反馈后，启动定时任务向master发送心跳，master收到心跳后更新心跳时间。
+=====================================================
+class SparkContext//即Driver端
+　　|--//主构造器
+　　　　|--def this()
+　　　　|--//创建SparkEnv，包含了一个ActorSyatem
+　　　　|--val env = createSparkEnv()
+　　　　|--//创建ActorSyatem的方法
+　　　　|--def createSparkEnv()
+　　　　　　|--//调用 SparkEnv 的静态方法创建SparkEnv
+　　　　　　|--SparkEnv.createDriverEnv()
+　　　　|--//创建 TaskScheduler
+　　　　|--var taskScheduler(schedulerBackend, taskScheduler) = SparkContext.createTaskScheduler(this, master)
+　　　　|--//创建 executors 和 DriverActor 的心跳Actor
+　　　　|--val heartbeatReceiver = env.actorSystem.actorOf(new HeartbeatReceiver(taskScheduler),...)
+　　　　|--//创建DAGScheduler
+　　　　|--var dagScheduler = new DAGScheduler(this)
+　　　　|--//启动TaskSecheduler
+　　　　|--taskScheduler.start()
+　　|--//创建 TaskScheduler 方法，
+　　|--//根据提交任务时指定的url(本地/yarn/standalone)创建相应的 TaskScheduler
+　　|--def createTaskScheduler()
+　　　　|--//spark的standalone模式
+　　　　|--case SPARK_REGEX(sparkUrl)
+　　　　　　|--//创建 TaskSchedulerImpl
+　　　　　　|--val scheduler = new TaskSchedulerImpl(sc)
+　　　　　　|--//创建 SparkDeploySchedulerBackend
+　　　　　　|--val backend = new SparkDeploySchedulerBackend(scheduler, sc, masterUrls)
+　　　　　　|--//调用 initialize 创建调度器，默认使用先进先出的调度器
+　　　　　　|--scheduler.initialize(backend)
+
+class TaskSchedulerImpl
+　　|--def initialize(backend)
+　　　　|--val backend = backend
+　　|--def start()
+　　　　|--//首先调用 SparkDeploySchedulerBackend 的start()
+　　　　|--backend.start()
+-----------★★★调用taskScheduler的submitTasks方法来提交TaskSet-------------
+　　|--def submitTasks(taskSet)
+　　　　|--//Driver发消息任务
+　　　　|--backend.reviveOffers()
+class SparkDeploySchedulerBackend extends CoarseGrainedSchedulerBackend
+　　|--def start()
+　　　　|--//调用父类的 start 来创建 DriverActor
+　　　　|--super.start() //CoarseGrainedSchedulerBackend 的 start 方法
+　　　　|--//准备一大堆的参数，例如spark的参数，java的参数，在Driver端都准备好，届时直接发给master，master拿到后发给executor执行即可
+　　　　|--conf......
+　　　　|--//将参数封装成Command，这是以后executor的实现类，类名也封装好了,yarn中启动的也是这个，所以不是yarnChild
+　　　　|--val command = Command("org.apache.executor.CoarseGrainedExecutorBackend",conf,...)
+　　　　|--//将参数封装到ApplicationDescription
+　　　　|--val appDesc = new ApplicationDescription(sc.appName, command, ....)
+　　　　|--创建AppClient
+　　　　|--client = new AppClient(sc.actorSystem, masters, appDesc, ...)
+　　　　|--//调用AppClient的start方法，创建ClientActor用于与Master通信
+　　　　|--client.start()
+class CoarseGrainedSchedulerBackend
+　　|--def start()
+　　　　|--//通过 actorSystem 创建 DriverActor
+　　　　|--driverActor = actorSystem.actorOf(new DriverActor(..)) //等待 executor 过来通信
+----------上接：Executor向Driver注册"|--//Driver建立连接，注册exectuor"------------------------
+　　|--def receiveWithLogging
+　　　　|--//Driver收到executor发来的注册消息
+　　　　|--case RegisterExecutor()
+　　　　　　|--//反馈注册成功
+　　　　　　|--//★★★查看是否有任务需要提交
+　　　　　　|--makeOffers()//暂时没有任务，还没有构建DAG
+-----------上接：提交前面的stage-------------------------
+　　|--def makeOffers()
+　　　　|--//调用launchTask向Executor提交Task
+　　　　|--launchTask(tasks)
+　　|--def launchTask(tasks)
+　　　　|--//序列化task
+　　　　|--val serializedTask = ser.serialize(task)
+　　　　|--//向Executor发送序列化好的Task
+　　　　|--executorData.executorActor ! LaunchTask(new SerializableBuffer(serializedTask))
+-----------上接：backend.reviveOffers()------------------
+　　|--def reviveOffers()
+　　　　|--driverActor ! ReviveOffers
+class DriverActor
+　　|--★★★调用makeOffers向Executor提交Task
+　　|--case ReviveOffers => makeOffers()
+class AppClient
+　　|--def start()
+　　　　|--//创建ClientActor用于与Master通信
+　　　　|--actor = actorSystem.actorOf(new ClientActor)
+　　|--//主构造器
+　　　　|--def preStart()
+　　　　　　|--//ClientActor向Master注册
+　　　　　　|--registerWithMaster()
+　　|--def registerWithMaster()
+　　　　|--//向Master注册
+　　　　|--tryRegidterAllMasters()
+　　|--def tryRegidterAllMasters()
+　　　　|--//循环所有Master，建立连接
+　　　　|--val actor = context.actorSelection(masterAkkaUrl)
+　　　　|--//拿到Master的引用，向master注册,备用的master不给反馈,活跃的才给
+　　　　|--//参数都保存在appDescription中，例如核数，内存大小，java参数,executor实现类
+　　　　|--actor ! RegisterApplication(appDescription)
+　　|--def receiveWithLogging
+　　　　|--//ClientActor收到Master发来的注册成功的消息
+　　　　|--case RegisterApplication
+　　　　　　|--//更新Master地址
+　　　　　　|--changeMaster(masterUrl)
+object SparkEnv
+　　|--def createDriverEnv()
+　　　　|//调用 create 创建 Actor
+　　　　|--create
+　　　　　　|--//创建 ActorSystem
+　　　　　　|--val (actorSystem, boundPort) = AkkaUtils.createActorSystem()
+总结：new SparkContext(),执行主构造器，创建SparkEnv，env里创建了ActorSystem用于通信，
+然后创建TaskScheduler，创建AGScheduler。TaskScheduler里创建了2个actor分别负责与master
+和executors进行通信。(TaskScheduler 里会创建一个backend,backend调用start方法后，会
+先调用父类的start方法，父类的start方法会创建DriverActor,再执行自己的start方法创建ClientActor)
+ClientActor创建之前，会准备一大堆的参数，包括spark参数，java参数，executor的实现类等，
+封装进AppClient，然后创建ClientActor与Master建立连接发送注册信息，Master收到后保存app的信息并反馈。
+这时Master开始调度资源并启动worker，有两种调度方式：尽量打散，尽量集中，默认打散。
+Master发消息给Worker，worker拼接Java命令，启动子进程。
+=====================================================
+spark-submit脚本提交流程源码分析：
+spark-submit脚本
+|--/bin/spark-class org.apache.spark.deploy.SparkSubmit "$@"
+spark-class脚本
+|--1.3.1	echo "$RUNNER" -cp "$CLASSPATH" $JAVA_OPTS "$@" 1>&2 //org.apache.spark.deploy.SparkSubmit
+|--1.6.1/2.0	"$RUNNER" -Xmx128m -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@"
+-----------------------------------------------------
+object org.apache.spark.deploy.SparkSubmit
+　　|--def main()
+　　　　|--//进行匹配
+　　　　|--appArgs.action match{case SparkSubmitAction.SUBMIT => submit(appArgs)}
+　　|--def submit()
+　　　　|--def doRunMain()
+　　　　　　|--
+　　　　|--//调用doRunMain
+　　　　|--doRunMain()
+　　　　　　|--proxyUser.doAs(new xxxAction(){
+　　　　　　　　override def run():Unit = {
+　　　　　　　　　　runMain(...,childMainClass,...)
+　　　　　　　　}
+　　　　　　})
+　　　　|--def runMain(...,childMainClass,...)
+　　　　　　|--//反射自定义的spark程序 class
+　　　　　　|--mainClass = Class.forName(childMainClass,...)
+　　　　　　|--//调用main方法
+　　　　　　|--val mainMethod = mainClass.getMethod("main",...)
+　　　　　　|--mainMethod.invoke(null, childArgs.toArray)
+总结： spark-submit启动了一个spark自己的submit程序，通过反射调用我们自定义的spark程序
+=====================================================
+Executor跟Driver通信过程源码分析
+org.apache.executor.CoarseGrainedExecutorBackend
+　　|--def main()
+　　　　|--//解析一大堆参数
+　　　　|--//调用run方法
+　　　　|--run(....)
+　　|--def run()
+　　　　|--//在executor里创建ActorSystem
+　　　　|--val fetcher = AkkaUtils.createActorSystem(...)
+　　　　|--//跟Driver建立连接
+　　　　|--env.actorSystem.actorOf(new CoarseGrainedExecutorBackend)
+　　|--def preStart()
+　　　　|--//Driver建立连接，注册exectuor
+　　　　|--.....
+　　|--def receiveWithLogging
+　　　　|--//Driver反馈注册成功
+　　　　|--case RegisteredExecutor
+　　　　　　|--//创建Executor实例，执行业务逻辑
+　　　　　　|--executor = new Executor(....)
+Executor
+|--//初始化线程池
+|--val threadPool = Utils.newDaemonCachedThreadPoll()
+总结：Executor启动后，创建actor向driver注册，创建Executor实例执行业务逻辑
+=====================================================
+任务提交流源码分析，DAGScheduler执行过程
+sc.textFile-->hadoopFile-->hadoopRDD-->MapParitionsRDD-->shuffleRDD
+rdd.saveAsTextFile()-->MapPartitionsRDD
+Driver端提交任务，执行self.context.runJob(....)
+
+class SparkContext
+　　|--def runJob()
+　　　　|--//DAGScheduler切分Stage，转成TaskSet给TaskScheduler再提交给Executor
+　　　　|--DAGScheduler.runJob(.....)
+class DAGScheduler
+　　|--//runjob切分stage
+　　|--def runJob()
+　　　　|--//调用submitJob返回一个回调器
+　　　　|--val waiter = submitJob(rdd, ...)
+　　　　|--//进行模式匹配
+　　　　|--waiter.awaitResult() match
+　　　　　　|--case JobSuccesded
+　　　　　　|--case JobFailed
+　　|--def submitJob(rdd, ...)
+　　　　|--//将数据封装到事件中放入eventProcessLoop的阻塞队列中
+　　　　|--eventProcessLoop.post(JobSubmitted(...))
+　　|--val eventProcessLoop = new DAGSchedulerEventProcessLoop(this)
+class DAGSchedulerEventProcessLoop extends EventLoop
+　　|--def onReceive()
+　　　　|--//提交计算任务
+　　　　|--case JobSubmitted(jobId,...)
+　　　　　　|--//调用DAGScheduler的handleJobSubmitted方法处理
+　　　　　　|--dagScheduler.handleJobSubmitted(jobId,...)
+　　|--//切分stage
+　　|--def handleJobSubmitted(jobId,...)
+　　　　|--★★★划分stage
+　　　　|--finalStage = newStage(finalRDD, partitons.size, None, jobId, ...)
+　　　　|--//开始提交Stage
+　　　　|--submitStage(finalStage)
+　　|--def submitStage(finalStage)
+　　　　|--//获取父stage
+　　　　|--val missing = getMissingParentStages(stage).sortBy(_.id)
+　　　　|--if(missing == null){
+　　　　　　　　//提交前面的stage
+　　　　　　　　submitMissingTasks(stage, jobId.get)
+　　　　　　}else{
+　　　　　　　　//有父stage，递归执行本方法
+　　　　　　　　for(parent <- missing){
+　　　　　　　　　　submitStage(parent)
+　　　　　　　　}
+　　　　　　　　|--//放进waitingStages
+　　　　　　　　|--waitingStages += stage
+　　　　　　}
+　　|--def submitMissingTasks(stage, jobId.get)
+　　　　|--//将stage创建成多个Task，分为shuffleMapTask和ResultTask
+　　　　|--new ShuffleMapTask(stage.id, taskBinary, part, locs)
+　　　　|--new ResultTask(stage.id, taskBinary, part, locs, id)
+　　　　|--//★★★调用taskScheduler的submitTasks方法来提交TaskSet
+　　　　|--taskScheduler.submitTasks(new TaskSet(tasks.toArray, stage.id, ..., stage.jobId, properties))
+　　|--def newStage
+　　　　|--//获取父stage
+　　　　|--val parentStages = getParentStages(rdd, jobId)
+　　　　|--val stage = new Stage(...,parentStages,...)
+　　|--def getParentStages
+　　　　|--//使用了3个数据结构来处理父类stage
+　　　　|--val parents = new HashSet[Stage]
+　　　　|--val visited = new HashSet[RDD]
+　　　　|--val waitingForVisit = new Stack[RDD]
+　　　　|--//思路：通过递归，压栈弹栈
+　　　　|--//见最后源码
+　　|--def getMissingParentStages
+　　　　|--//与getParentStages一样的数据结构找父stage
+class EventLoop
+　　|--//阻塞队列
+　　|--val eventQueue = new LinkedBlockingDeque()
+　　|--//不停的取事件
+　　|--val eventThread = new Thread(name){
+　　　　　　def run(){
+　　　　　　　　while(){
+　　　　　　　　　　val event = eventQueue.take()
+　　　　　　　　　　onReceive(event)
+　　　　　　　　}
+　　　　　　}
+　　　　}
+
+总结：Action算子会执行sparkContext里的runJob(),再调用DAGScheduler的runJob()，
+通过2个HashSet和1个Stack划分stage，然后提交stage
+
+=======================划分stage源码==============================
+/**
+* Create a Stage -- either directly for use as a result stage, or as part of the (re)-creation
+* of a shuffle map stage in newOrUsedStage. The stage will be associated with the provided
+* jobId. Production of shuffle map stages should always use newOrUsedStage, not newStage
+* directly.
+*/
+//★★★用于创建Stage
+private def newStage(
+　　rdd: RDD[_],
+　　numTasks: Int,
+　　shuffleDep: Option[ShuffleDependency[_, _, _]],
+　　jobId: Int,
+　　callSite: CallSite)
+　　: Stage =
+{
+　　//★★★获取他的父Stage
+　　val parentStages = getParentStages(rdd, jobId)
+　　val id = nextStageId.getAndIncrement()
+　　val stage = new Stage(id, rdd, numTasks, shuffleDep, parentStages, jobId, callSite)
+　　stageIdToStage(id) = stage
+　　updateJobIdStageIdMaps(jobId, stage)
+　　stage
+}
+------------------------------------------------------
+/**
+* Get or create the list of parent stages for a given RDD. The stages will be assigned the
+* provided jobId if they haven't already been created with a lower jobId.
+*/
+//TODO 用户获取父Stage
+private def getParentStages(rdd: RDD[_], jobId: Int): List[Stage] = {
+　　val parents = new HashSet[Stage]
+　　val visited = new HashSet[RDD[_]]
+　　// We are manually maintaining a stack here to prevent StackOverflowError
+　　// caused by recursively visiting
+　　val waitingForVisit = new Stack[RDD[_]]
+　　def visit(r: RDD[_]) {
+　　　　if (!visited(r)) {
+　　　　　　visited += r
+　　　　　　// Kind of ugly: need to register RDDs with the cache here since
+　　　　　　// we can't do it in its constructor because # of partitions is unknown
+　　　　for (dep <- r.dependencies) {
+　　　　　　dep match {
+　　　　　　　　case shufDep: ShuffleDependency[_, _, _] =>
+　　　　　　　　　　//★★★把宽依赖传进去，获得父Stage
+　　　　　　　　　　parents += getShuffleMapStage(shufDep, jobId)
+　　　　　　　　case _ =>
+　　　　　　　　　　waitingForVisit.push(dep.rdd)
+　　　　　　　　}
+　　　　　　}
+　　　　}
+　　}
+　　waitingForVisit.push(rdd)
+　　while (!waitingForVisit.isEmpty) {
+　　　　visit(waitingForVisit.pop())
+　　}
+　　parents.toList
+}
+------------------------------------------------------
+/**
+* Get or create a shuffle map stage for the given shuffle dependency's map side.
+* The jobId value passed in will be used if the stage doesn't already exist with
+* a lower jobId (jobId always increases across jobs.)
+*/
+private def getShuffleMapStage(shuffleDep: ShuffleDependency[_, _, _], jobId: Int): Stage = {
+　　shuffleToMapStage.get(shuffleDep.shuffleId) match {
+　　　　case Some(stage) => stage
+　　　　case None =>
+　　　　　　// We are going to register ancestor shuffle dependencies
+　　　　　　registerShuffleDependencies(shuffleDep, jobId)
+　　　　　　// Then register current shuffleDep
+
+　　　　　　val stage =
+　　　　　　//★★★创建服父Stage
+　　　　　　　　newOrUsedStage(
+　　　　　　　　　　shuffleDep.rdd, shuffleDep.rdd.partitions.size, shuffleDep, jobId,
+　　　　　　　　　　shuffleDep.rdd.creationSite)
+　　　　　　shuffleToMapStage(shuffleDep.shuffleId) = stage
+
+　　　　　　stage
+　　　　}
+　　}
+------------------------------------------------------
+/**
+* Create a shuffle map Stage for the given RDD. The stage will also be associated with the
+* provided jobId. If a stage for the shuffleId existed previously so that the shuffleId is
+* present in the MapOutputTracker, then the number and location of available outputs are
+* recovered from the MapOutputTracker
+*/
+private def newOrUsedStage(
+　　rdd: RDD[_],
+　　numTasks: Int,
+　　shuffleDep: ShuffleDependency[_, _, _],
+　　jobId: Int,
+　　callSite: CallSite)
+　　: Stage =
+{
+　　//★★★递归
+　　val stage = newStage(rdd, numTasks, Some(shuffleDep), jobId, callSite)
+　　if (mapOutputTracker.containsShuffle(shuffleDep.shuffleId)) {
+　　　　val serLocs = mapOutputTracker.getSerializedMapOutputStatuses(shuffleDep.shuffleId)
+　　　　val locs = MapOutputTracker.deserializeMapStatuses(serLocs)
+　　　　for (i <- 0 until locs.size) {
+　　　　　　stage.outputLocs(i) = Option(locs(i)).toList // locs(i) will be null if missing
+　　　　}
+　　　　stage.numAvailableOutputs = locs.count(_ != null)
+　　} else {
+　　　　// Kind of ugly: need to register RDDs with the cache and map output tracker here
+　　　　// since we can't do it in the RDD constructor because # of partitions is unknown
+　　　　logInfo("Registering RDD " + rdd.id + " (" + rdd.getCreationSite + ")")
+　　　　mapOutputTracker.registerShuffle(shuffleDep.shuffleId, rdd.partitions.size)
+　　}
+　　stage
+}
+

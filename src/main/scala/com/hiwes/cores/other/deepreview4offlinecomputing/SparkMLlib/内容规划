@@ -1,0 +1,34 @@
+##Spark MLlib内容规划
+1.Spark MLlib机器学习算法库基本算法原理及推导,与代码实现
+2.Spark MLlib数据挖掘与性能优化
+3.Spark MLlib模型评估
+
+##Spark MLlib详细规划————原理及推导，代码实现与模型评估：
+1.1 协同过滤：ALS算法：交替最小二乘
+1.2 关联规则：FP-Growth算法：关联分析
+1.3 聚类：   Kmeans算法：K均值
+1.4 分类：   DecisionTree算法：决策树
+            RandomForest算法：随机森林
+            NaiveBayes算法：  朴素贝叶斯
+1.5 回归：   SVM算法：         支持向量机
+            KNN算法：         K近邻
+            GBDT算法：        梯度提升决策树
+1.6 降维：   SVD算法：         矩阵奇异值分解
+            PCA算法：         主成分分析
+1.7 优化：   SGD算法：         随机梯度下降
+            L-BFGS算法：      拟牛顿法
+1.8 特征抽取筛选：TF-IDF算法：  词频——逆文本频率指数
+            Word2Vec算法：    词向量
+            Normalizer算法：  特征抽取
+            ChiSqSelector：  平方选择分布器
+            StandradScaler： 去均值和方差标准化
+1.9 统计：   Correlation算法： 相关性
+            StratifiedSampling：分层抽样
+            HypothesisTesting：假设检验
+
+2.1 实现模拟数据的数据挖掘
+2.2 实现模型数据创建的模型的性能优化
+
+3.1 实现各个模型的模型评估
+3.2 实现各个模型的自我学习
+
